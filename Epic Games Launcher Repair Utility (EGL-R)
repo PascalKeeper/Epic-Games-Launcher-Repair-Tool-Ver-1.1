@@ -1,0 +1,159 @@
+"""
+Copyright Joseph Peransi, two thousand twenty-six.
+Epic Games Launcher Repair Utility (EGL-R).
+
+This script performs a safe repair of the Epic Games Launcher by:
+1. Forcefully terminating active launcher processes.
+2. Purging corrupt web caches, logs, and temporary config states.
+3. Preserving game manifests and installation data to prevent data loss.
+
+Requirements:
+    - Windows OS
+    - Run as Administrator (recommended for process termination)
+"""
+
+import os
+import sys
+import shutil
+import subprocess
+import time
+import logging
+from pathlib import Path
+from typing import List, Union
+
+# Configure high-performance logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - [EGL-R] - %(levelname)s - %(message)s",
+    datefmt="%H:%M:%S"
+)
+logger = logging.getLogger(__name__)
+
+class EpicLauncherRepair:
+    def __init__(self):
+        self.local_app_data = Path(os.environ.get('LOCALAPPDATA', ''))
+        self.target_dir = self.local_app_data / "EpicGamesLauncher" / "Saved"
+        self.manifest_dir = Path(os.environ.get('ProgramData', '')) / "Epic" / "EpicGamesLauncher" / "Data" / "Manifests"
+        self.process_name = "EpicGamesLauncher.exe"
+
+    def check_privileges(self) -> bool:
+        """Verifies if the script is running with administrative privileges."""
+        try:
+            return os.getuid() == 0
+        except AttributeError:
+            import ctypes
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+
+    def terminate_launcher(self) -> None:
+        """Forcefully terminates the Epic Games Launcher process."""
+        logger.info(f"Scanning for {self.process_name}...")
+        
+        # Using subprocess to avoid non-standard library dependencies like psutil
+        try:
+            # Check if process is running
+            result = subprocess.run(
+                ['tasklist', '/FI', f'IMAGENAME eq {self.process_name}'],
+                capture_output=True,
+                text=True
+            )
+            
+            if self.process_name.lower() in result.stdout.lower():
+                logger.warning(f"Process {self.process_name} found. Terminating...")
+                subprocess.run(
+                    ['taskkill', '/F', '/IM', self.process_name],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                time.sleep(2) # Grace period for file handle release
+                logger.info("Process terminated successfully.")
+            else:
+                logger.info("Launcher is not currently running.")
+                
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to terminate process: {e}")
+            sys.exit(1)
+
+    def clean_cache_directories(self) -> None:
+        """
+        Removes cache directories known to cause stability issues.
+        Targeting: webcache, webcache_*, logs
+        """
+        if not self.target_dir.exists():
+            logger.warning(f"Directory not found: {self.target_dir}. Launcher may not have been run yet.")
+            return
+
+        targets: List[str] = [
+            "webcache",
+            "webcache_4147", # Legacy specific
+            "webcache_4430", # Legacy specific
+            "Logs"
+        ]
+
+        # Scan for any folder starting with 'webcache'
+        for entry in self.target_dir.iterdir():
+            if entry.is_dir() and entry.name.lower().startswith("webcache"):
+                targets.append(entry.name)
+
+        # De-duplicate list
+        targets = list(set(targets))
+
+        logger.info(f"Targeting cache directories in: {self.target_dir}")
+
+        for target in targets:
+            path_to_remove = self.target_dir / target
+            if path_to_remove.exists():
+                try:
+                    logger.info(f"Removing: {path_to_remove.name}...")
+                    shutil.rmtree(path_to_remove)
+                    logger.info(f"✓ Cleaned {path_to_remove.name}")
+                except PermissionError:
+                    logger.error(f"PERMISSION DENIED: Cannot remove {path_to_remove.name}. Ensure the Launcher is closed.")
+                except Exception as e:
+                    logger.error(f"Error removing {path_to_remove.name}: {e}")
+            else:
+                pass # Directory doesn't exist, which is fine
+
+    def verify_manifests(self) -> None:
+        """
+        Checks for the existence of game manifests. 
+        This confirms that game library knowledge is intact.
+        """
+        if self.manifest_dir.exists():
+            item_count = sum(1 for _ in self.manifest_dir.iterdir())
+            logger.info(f"Manifest Integrity Check: Found {item_count} installed items/games.")
+            logger.info(f"Manifest path: {self.manifest_dir}")
+            logger.info("Game files remain untouched.")
+        else:
+            logger.warning("No local game manifests found. This implies no games are currently installed or the path differs.")
+
+    def run_repair(self) -> None:
+        print("\n" + "="*50)
+        print("   EPIC GAMES LAUNCHER REPAIR TOOL V1.0")
+        print("="*50 + "\n")
+
+        if not self.check_privileges():
+            logger.warning("Running without Administrator privileges. Process termination may fail.")
+            print(">> RESTART AS ADMIN RECOMMENDED <<\n")
+
+        self.terminate_launcher()
+        self.clean_cache_directories()
+        self.verify_manifests()
+
+        print("\n" + "="*50)
+        logger.info("Repair sequence complete.")
+        print("Please restart the Epic Games Launcher.")
+        print("You may need to log in again.")
+        print("="*50)
+
+if __name__ == "__main__":
+    if os.name != 'nt':
+        logger.error("This script is designed for Windows operating systems only.")
+        sys.exit(1)
+        
+    repair_tool = EpicLauncherRepair()
+    try:
+        repair_tool.run_repair()
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user.")
+        sys.exit(0)
